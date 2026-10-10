@@ -1,61 +1,45 @@
-from fastapi import FastAPI
-import requests
-import ssl
-import socket
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import httpx, ssl, socket
 from datetime import datetime
-from urllib.parse import urlparse
-from fastapi.middleware.cors import CORSMiddleware
+import os
 
-app = FastAPI()
-
-from fastapi.middleware.cors import CORSMiddleware
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-def check_ssl(domain):
-    try:
-        context = ssl.create_default_context()
-        with socket.create_connection((domain, 443), timeout=5) as sock:
-            with context.wrap_socket(sock, server_hostname=domain) as ssock:
-                cert = ssock.getpeercert()
-                expiry = datetime.strptime(cert['notAfter'], '%b %d %H:%M:%S %Y %Z')
-                days_left = (expiry - datetime.now()).days
-                return {"valido": True, "dias_restantes": days_left}
-    except Exception as e:
-        return {"valido": False, "error": str(e)}
+app = FastAPI(title="AuditYa Pro API", version="2.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/auditar")
-def auditar(url: str):
-    if not url.startswith("http"):
-        url = "https://" + url
-    
-    dominio = urlparse(url).netloc or urlparse(url).path
-    
-    # 1. ¿Está online?
+async def auditar(url: str = Query(...)):
+    dominio = url.replace("https://","").replace("http://","").split("/")[0]
+    online=False; status_code=0
     try:
-        r = requests.get(url, timeout=5)
-        online = r.status_code == 200
-        status_code = r.status_code
-    except:
-        online = False
-        status_code = 0
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            r = await client.get(url if url.startswith("http") else f"https://{url}")
+            status_code=r.status_code; online=200 <= status_code < 400
+    except: online=False
+    valido=False; dias_restantes=0
+    try:
+        ctx=ssl.create_default_context()
+        with ctx.wrap_socket(socket.socket(), server_hostname=dominio) as s:
+            s.settimeout(5); s.connect((dominio,443))
+            cert=s.getpeercert(); exp_str=cert['notAfter']
+            exp_date=datetime.strptime(exp_str,'%b %d %H:%M:%S %Y %Z')
+            dias_restantes=(exp_date-datetime.utcnow()).days; valido=dias_restantes>0
+    except: valido=False
+    recomendacion="TODO BIEN" if (online and valido) else "Revisar SSL o conectividad"
+    if 0<dias_restantes<30: recomendacion=f"ATENCIÓN: SSL expira en {dias_restantes} días"
+    return {"dominio":dominio,"online":online,"status_code":status_code,"ssl":{"valido":valido,"dias_restantes":dias_restantes},"valido":valido,"dias_restantes":dias_restantes,"recomendacion":recomendacion}
 
-    # 2. ¿SSL?
-    ssl_info = check_ssl(dominio)
+@app.get("/health")
+def health(): return {"status":"ok"}
 
-    return {
-        "dominio": dominio,
-        "online": online,
-        "status_code": status_code,
-        "ssl": ssl_info,
-        "recomendacion": "TODO BIEN" if online and ssl_info.get("valido") else "ALERTA - Revisar"
-    }
-@app.get("/")
-def home():
-    return {"mensaje": "AuditYa API está corriendo! Ve a /docs"}
+if os.path.isdir("static"):
+    app.mount("/app", StaticFiles(directory="static", html=True), name="static")
+    @app.get("/")
+    async def root():
+        if os.path.exists("static/index.html"): return FileResponse("static/index.html")
+        return {"mensaje":"AuditYa API está corriendo! Ve a /docs"}
+
+if __name__ == "__main__":
+    import uvicorn; port=int(os.environ.get("PORT",8000)); uvicorn.run(app, host="0.0.0.0", port=port)
