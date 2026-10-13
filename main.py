@@ -1,174 +1,340 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
-import httpx, ssl, socket
+from fastapi.responses import HTMLResponse, JSONResponse
+import httpx, ssl, socket, json, os, random, string
 from datetime import datetime
 
-app = FastAPI(title="AuditYa Pro")
+app = FastAPI(title="AuditYa Pro - Con Sistema de Licencias")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-APP_HTML = """
+CODES_FILE = "codes.json"
+ADMIN_PASS = "Cristhoper2025"  # CAMBIA ESTA CONTRASEÑA LUEGO
+WHATSAPP = "593997687995"
+
+def load_codes():
+    if os.path.exists(CODES_FILE):
+        try:
+            with open(CODES_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_codes(codes):
+    try:
+        with open(CODES_FILE, "w") as f:
+            json.dump(codes, f, indent=2)
+    except:
+        pass
+
+def gen_code(plan):
+    prefix = {"Basico":"BAS","Pro":"PRO","Agencia":"AGY"}.get(plan, "PRO")
+    rand = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+    return f"{prefix}-{rand[:4]}-{rand[4:]}"
+
+codes_db = load_codes()
+# Códigos de prueba para ti
+if not codes_db:
+    codes_db = {
+        "PRO-TEST-CRISTHOPER": {"plan":"Pro","limite":50,"usados":0,"email":"cristhoperpinos@test.com","activo":True,"creado": str(datetime.now())},
+        "BAS-PRUEBA-1234": {"plan":"Basico","limite":10,"usados":0,"email":"prueba@test.com","activo":True,"creado": str(datetime.now())},
+    }
+    save_codes(codes_db)
+
+HOME_HTML = """
 <!DOCTYPE html>
-<html>
-<head>
-<meta charset='utf-8'>
-<meta name='viewport' content='width=device-width, initial-scale=1'>
-<title>AuditYa Pro - Auditor Online</title>
-<style>
-body{font-family:system-ui;background:#0f172a;color:#fff;padding:20px;text-align:center}
-.card{background:#1e293b;max-width:600px;margin:20px auto;padding:20px;border-radius:12px}
-input{padding:12px;width:90%;max-width:400px;border-radius:8px;border:none;margin:10px;font-size:16px}
-.btn{padding:12px 24px;border:none;border-radius:8px;font-weight:bold;cursor:pointer;margin:5px}
-.btn-g{background:#22c55e;color:white}.btn-b{background:#3b82f6;color:white}
-#res{margin-top:15px;text-align:left;background:#0f172a;padding:15px;border-radius:8px;font-size:14px;word-break:break-all}
-h1{color:#22c55e}
-a{color:#22c55e}
+<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>AuditYa Pro</title>
+<style>body{font-family:system-ui;background:#0f172a;color:#fff;padding:20px;text-align:center}
+.card{background:#1e293b;max-width:650px;margin:20px auto;padding:20px;border-radius:12px;border:1px solid rgba(255,255,255,.08)}
+input{padding:12px;width:90%;max-width:400px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:#0f172a;color:#fff;margin:8px;font-size:15px}
+.btn{padding:12px 22px;border:none;border-radius:30px;font-weight:800;cursor:pointer;margin:5px}
+.btn-g{background:#22c55e;color:#0f172a}.btn-w{background:#fff;color:#0f172a}.btn-b{background:#3b82f6;color:#fff}
+#res{margin-top:15px;text-align:left;background:#0f172a;padding:15px;border-radius:10px;font-size:14px;word-break:break-all;border:1px solid rgba(255,255,255,.06)}
+.badge{display:inline-block;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.3);color:#22c55e;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:800}
+a{color:#22c55e;text-decoration:none;font-weight:700}
+.code-ok{background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);color:#86efac;padding:10px;border-radius:8px;margin:10px 0}
 </style>
 </head>
 <body>
 <h1>🛡️ AuditYa Pro</h1>
-<p>Tu SaaS de Auditorias SEO + SSL - ONLINE 24/7</p>
-<p><a href="/ventas">Ver planes y precios →</a></p>
+<p><span class="badge">● ONLINE 24/7</span> · Tu SaaS de Auditorias</p>
+<p><a href="/ventas">Ver planes $27/$47/$97 →</a> | <a href="/activar">Activar mi código →</a></p>
 <div class="card">
+<h3>🔍 Auditoría Gratis (1 demo)</h3>
 <input id="url" placeholder="https://ejemplo.com">
+<input id="codigo" placeholder="Código PRO (opcional) Ej: PRO-8X2J-99A1">
 <br>
 <button class="btn btn-g" onclick="auditar()">AUDITAR AHORA</button>
 <button class="btn btn-b" onclick="pdf()">📄 PDF PRO</button>
-<div id="res">Ingresa una URL para auditar...</div>
+<div id="info"></div>
+<div id="res">Ingresa una URL para auditar...<br><br>💡 Tip: Sin código puedes probar 1 vez. Con código Pro tienes 50 auditorías.</div>
 </div>
 <script>
+let lastData=null;
 async function auditar(){
  let u=document.getElementById('url').value;
+ let c=document.getElementById('codigo').value.trim().toUpperCase();
  if(!u){alert('Pon una URL');return}
  document.getElementById('res').innerHTML='⏳ Auditando '+u+'...';
  try{
-  let r=await fetch('/auditar?url='+encodeURIComponent(u));
+  let url='/auditar?url='+encodeURIComponent(u);
+  if(c) url+='&codigo='+encodeURIComponent(c);
+  let r=await fetch(url);
   let d=await r.json();
-  document.getElementById('res').innerHTML='<b>Dominio:</b> '+d.dominio+'<br><b>Online:</b> '+(d.online?'✅ Si':'❌ No')+' ('+d.status_code+')<br><b>SSL:</b> '+(d.ssl.valido?'✅ Valido':'❌ Invalido')+'<br><b>Dias restantes:</b> '+d.ssl.dias_restantes+'<br><b>Recomendacion:</b> '+d.recomendacion;
-  window.lastData=d;
+  if(d.error){document.getElementById('res').innerHTML='❌ '+d.error; return;}
+  lastData=d;
+  let html='<b>Dominio:</b> '+d.dominio+'<br><b>Online:</b> '+(d.online?'✅ Si':'❌ No')+' ('+d.status_code+')<br><b>SSL:</b> '+(d.ssl.valido?'✅ Valido':'❌ Invalido')+'<br><b>Dias:</b> '+d.ssl.dias_restantes+'<br><b>Recomendacion:</b> '+d.recomendacion;
+  if(d.licencia){html='<div class=code-ok>✅ '+d.licencia.plan+' | Usados: '+d.licencia.usados+'/'+d.licencia.limite+' | Restan: '+(d.licencia.limite-d.licencia.usados)+'</div>'+html;}
+  document.getElementById('res').innerHTML=html;
+  document.getElementById('info').innerHTML=d.licencia ? '' : '<small style=color:#94a3b8>Demo gratis. <a href=/ventas>Compra tu código para 50 auditorías</a></small>';
  }catch(e){document.getElementById('res').innerHTML='❌ Error: '+e}
 }
 function pdf(){
- if(!window.lastData){alert('Primero audita una web');return}
- let d=window.lastData;
+ if(!lastData){alert('Primero audita');return}
+ let d=lastData;
  let w=window.open('','_blank');
- w.document.write('<html><head><title>Reporte '+d.dominio+'</title></head><body style="font-family:Arial;padding:30px"><h1>Reporte AuditYa Pro</h1><p><b>Dominio:</b> '+d.dominio+'</p><p><b>Online:</b> '+d.online+' - Status '+d.status_code+'</p><p><b>SSL Valido:</b> '+d.ssl.valido+'</p><p><b>Dias restantes SSL:</b> '+d.ssl.dias_restantes+'</p><p><b>Recomendacion:</b> '+d.recomendacion+'</p><p><b>Fecha:</b> '+new Date().toLocaleString()+'</p><hr><p>Generado por AuditYa Pro - https://auditya-pro.onrender.com</p><script>window.print();<\/script></body></html>');
+ w.document.write('<html><head><title>Reporte '+d.dominio+'</title></head><body style="font-family:Arial;padding:30px"><h1>Reporte AuditYa Pro</h1><p><b>Dominio:</b> '+d.dominio+'</p><p><b>Online:</b> '+d.online+'</p><p><b>SSL Valido:</b> '+d.ssl.valido+'</p><p><b>Dias restantes:</b> '+d.ssl.dias_restantes+'</p><p><b>Recomendacion:</b> '+d.recomendacion+'</p>'+(d.licencia?'<p><b>Licencia:</b> '+d.licencia.plan+' - '+d.licencia.codigo+'</p>':'')+'<p><b>Fecha:</b> '+new Date().toLocaleString()+'</p><hr><p>Generado por AuditYa Pro - auditya-pro.onrender.com | WhatsApp 0997687995</p><script>window.print();<\\/script></body></html>');
 }
 </script>
 </body>
 </html>
 """
 
-VENTAS_HTML = """
+VENTAS_HTML = f"""
 <!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AuditYa Pro - Audita webs en 5 segundos | Ecuador</title>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AuditYa Pro - Planes</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box;font-family:Inter,system-ui,sans-serif}
-body{background:#0f172a;color:#e2e8f0;line-height:1.6}
-.container{max-width:1100px;margin:0 auto;padding:20px}
-.header{display:flex;justify-content:space-between;align-items:center;padding:16px 0;border-bottom:1px solid rgba(255,255,255,.06)}
-.logo{display:flex;align-items:center;gap:10px;font-weight:900;font-size:20px}
-.badge{background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);color:#22c55e;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:700}
-.btn{padding:12px 24px;border-radius:30px;border:none;font-weight:800;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:8px}
-.btn-g{background:#22c55e;color:#0f172a}.btn-w{background:#fff;color:#0f172a}
-.hero{text-align:center;padding:60px 0 40px}
-.hero h1{font-size:48px;line-height:.95;font-weight:900;color:#fff}
-.hero span{background:linear-gradient(to right,#fff,#94a3b8);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.hero p{margin-top:20px;color:#94a3b8;font-size:18px;max-width:600px;margin-left:auto;margin-right:auto}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;margin:40px 0}
-.card{background:#1e293b;border:1px solid rgba(255,255,255,.06);border-radius:20px;padding:24px;position:relative}
-.card.popular{border:2px solid #22c55e;box-shadow:0 0 30px rgba(34,197,94,.2)}
-.tag{position:absolute;top:-12px;left:50%;transform:translateX(-50%);background:#22c55e;color:#0f172a;font-size:11px;font-weight:900;padding:4px 12px;border-radius:20px}
-.price{font-size:42px;font-weight:900;color:#fff;margin:10px 0}
-.price small{font-size:16px;color:#94a3b8}
-ul{list-style:none;margin:16px 0}
-li{padding:6px 0;font-size:14px;color:#cbd5e1}li:before{content:"✅ ";color:#22c55e}
-.cta{display:block;width:100%;text-align:center;margin-top:16px}
-.demo{background:rgba(255,255,255,.03);border:1px dashed rgba(255,255,255,.1);border-radius:16px;padding:30px;text-align:center;margin:50px 0}
-@media(max-width:600px){.hero h1{font-size:32px}}
+*{{margin:0;padding:0;box-sizing:border-box;font-family:system-ui}}
+body{{background:#0f172a;color:#e2e8f0}}
+.container{{max-width:1100px;margin:0 auto;padding:20px}}
+.header{{display:flex;justify-content:space-between;padding:16px 0;border-bottom:1px solid rgba(255,255,255,.06)}}
+.logo{{font-weight:900;font-size:20px}} .badge{{background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);color:#22c55e;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:800}}
+.btn{{padding:12px 24px;border-radius:30px;border:none;font-weight:800;cursor:pointer;text-decoration:none;display:inline-block}}
+.btn-g{{background:#22c55e;color:#0f172a}} .btn-w{{background:#fff;color:#0f172a}}
+.hero{{text-align:center;padding:50px 0}} .hero h1{{font-size:42px;font-weight:900;color:#fff;line-height:.95}}
+.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;margin:40px 0}}
+.card{{background:#1e293b;border:1px solid rgba(255,255,255,.06);border-radius:20px;padding:24px;position:relative}}
+.card.popular{{border:2px solid #22c55e}} .tag{{position:absolute;top:-12px;left:50%;transform:translateX(-50%);background:#22c55e;color:#0f172a;font-size:11px;font-weight:900;padding:4px 12px;border-radius:20px}}
+.price{{font-size:40px;font-weight:900;color:#fff;margin:10px 0}} .price small{{font-size:15px;color:#94a3b8}}
+ul{{list-style:none;margin:14px 0}} li{{padding:5px 0;font-size:14px}} li:before{{content:"✅ "}} .cta{{width:100%;text-align:center;margin-top:14px}}
+.flujo{{background:rgba(255,255,255,.03);border-radius:16px;padding:24px;margin:40px 0;text-align:center}}
+.paso{{display:inline-block;background:#1e293b;padding:10px 16px;border-radius:30px;margin:6px;font-size:13px;border:1px solid rgba(255,255,255,.08)}}
+@media(max-width:600px){{.hero h1{{font-size:28px}}}}
+</style>
+</head>
+<body><div class="container">
+<div class="header"><div class="logo">🛡️ AuditYa Pro</div><div class="badge">● ONLINE 24/7</div></div>
+<div class="hero">
+<h1>Audita webs en 5s<br><span style="color:#94a3b8">y cobra $27-$97</span></h1>
+<p style="margin-top:16px;color:#94a3b8">Sistema automático de licencias listo</p><br>
+<a href="/" class="btn btn-w">Probar Gratis</a>
+<a href="#planes" class="btn btn-g">Ver Planes</a>
+</div>
+
+<div class="flujo">
+<h3 style="color:#fff;margin-bottom:12px">🔄 Cómo funciona después de pagar:</h3>
+<div><span class="paso">1️⃣ Cliente paga y te manda captura al WhatsApp 0997687995</span><br>
+<span class="paso">2️⃣ Tú entras a /admin y generas código en 5 segundos</span><br>
+<span class="paso">3️⃣ Cliente recibe código Ej: PRO-8X2J-99A1</span><br>
+<span class="paso">4️⃣ Cliente va a /activar y pone su código → ✅ Plan activado automático</span></div>
+</div>
+
+<div id="planes" class="cards">
+<div class="card"><h3>🟦 Básico</h3><div class="price">$27 <small>/mes</small></div><ul><li>10 auditorías</li><li>PDF PRO</li><li>SSL + Online</li></ul><a href="https://wa.me/{WHATSAPP}?text=Hola%20quiero%20Plan%20Basico%20%2427" class="btn btn-w cta">Comprar $27</a></div>
+<div class="card popular"><div class="tag">MÁS POPULAR</div><h3>🟩 Pro</h3><div class="price">$47 <small>/mes</small></div><ul><li>50 auditorías</li><li>PDF con logo</li><li>Soporte WhatsApp</li><li>Código automático</li></ul><a href="https://wa.me/{WHATSAPP}?text=Hola%20quiero%20Plan%20Pro%20%2447" class="btn btn-g cta">Comprar $47 🔥</a></div>
+<div class="card"><h3>🟨 Agencia</h3><div class="price">$97 <small>/mes</small></div><ul><li>Ilimitado</li><li>White Label</li><li>Vende a clientes</li></ul><a href="https://wa.me/{WHATSAPP}?text=Hola%20quiero%20Plan%20Agencia%20%2497" class="btn btn-w cta">Comprar $97</a></div>
+</div>
+<p style="text-align:center;color:#64748b;font-size:12px;margin:20px 0">WhatsApp: 0997687995 · @cristhoperpinos · Hecho en Ecuador 🇪🇨</p>
+</div></body></html>
+"""
+
+ACTIVAR_HTML = """
+<!DOCTYPE html>
+<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>Activar Código - AuditYa Pro</title>
+<style>body{font-family:system-ui;background:#0f172a;color:#fff;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:20px}
+.card{background:#1e293b;max-width:450px;width:100%;padding:30px;border-radius:16px;border:1px solid rgba(255,255,255,.08);text-align:center}
+input{padding:14px;width:100%;border-radius:10px;border:1px solid rgba(255,255,255,.15);background:#0f172a;color:#fff;font-size:16px;letter-spacing:1px;text-transform:uppercase;text-align:center;margin:12px 0}
+.btn{padding:14px 24px;border:none;border-radius:30px;font-weight:800;cursor:pointer;width:100%;font-size:15px}
+.btn-g{background:#22c55e;color:#0f172a} .ok{background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.3);color:#86efac;padding:12px;border-radius:10px;margin:12px 0}
+.err{background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.3);color:#fca5a5;padding:12px;border-radius:10px;margin:12px 0}
+a{color:#22c55e}
 </style>
 </head>
 <body>
-<div class="container">
-<div class="header">
-<div class="logo">🛡️ AuditYa <span style="color:#22c55e">Pro</span></div>
-<div class="badge">● ONLINE 24/7</div>
-</div>
-
-<div class="hero">
-<h1>Audita cualquier web<br><span>en 5 segundos</span></h1>
-<p>Detecta problemas de SSL, SEO y seguridad que tus clientes no ven. Reporte PDF PRO listo para vender en Ecuador.</p>
-<br>
-<a href="/" class="btn btn-w">Probar Gratis Ahora →</a>
-<a href="https://wa.me/593997687995?text=Hola%20Cristhoper%20quiero%20AuditYa%20Pro" class="btn btn-g">Comprar por WhatsApp</a>
-</div>
-
-<div class="cards">
 <div class="card">
-<h3>🟦 Básico</h3>
-<div class="price">$27 <small>/mes</small></div>
-<ul>
-<li>10 auditorías / mes</li>
-<li>Reporte PDF PRO</li>
-<li>Check SSL + Online</li>
-<li>Soporte por WhatsApp</li>
-</ul>
-<a href="https://wa.me/593997687995?text=Hola%20Cristhoper%20quiero%20el%20Plan%20Basico%20de%20%2427%20de%20AuditYa%20Pro" class="btn btn-w cta">Comprar Básico $27</a>
+<h2>🔑 Activar mi Código</h2>
+<p style="color:#94a3b8;font-size:14px;margin:8px 0">Te llegó por WhatsApp después de pagar</p>
+<input id="codigo" placeholder="Ej: PRO-8X2J-99A1">
+<button class="btn btn-g" onclick="activar()">ACTIVAR AHORA</button>
+<div id="res"></div>
+<p style="margin-top:20px;font-size:13px;color:#64748b">¿No tienes código? <a href="/ventas">Compra aquí</a> · WhatsApp 0997687995</p>
 </div>
-
-<div class="card popular">
-<div class="tag">MÁS POPULAR</div>
-<h3>🟩 Pro</h3>
-<div class="price">$47 <small>/mes</small></div>
-<ul>
-<li>50 auditorías / mes</li>
-<li>PDF con tu logo</li>
-<li>Recomendación IA</li>
-<li>Prioridad WhatsApp</li>
-<li>Acceso 24/7</li>
-</ul>
-<a href="https://wa.me/593997687995?text=Hola%20Cristhoper%20quiero%20el%20Plan%20Pro%20de%20%2447%20de%20AuditYa%20Pro%20-%20El%20mas%20popular" class="btn btn-g cta">Comprar Pro $47 🔥</a>
-</div>
-
-<div class="card">
-<h3>🟨 Agencia</h3>
-<div class="price">$97 <small>/mes</small></div>
-<ul>
-<li>Auditorías ilimitadas</li>
-<li>White Label total</li>
-<li>Vende a tus clientes</li>
-<li>Soporte 1 a 1</li>
-<li>Grupo VIP</li>
-</ul>
-<a href="https://wa.me/593997687995?text=Hola%20Cristhoper%20quiero%20el%20Plan%20Agencia%20de%20%2497%20de%20AuditYa%20Pro%20-%20Ilimitado" class="btn btn-w cta">Comprar Agencia $97</a>
-</div>
-</div>
-
-<div class="demo">
-<h2 style="color:#fff">🚀 Demo en vivo</h2>
-<p style="color:#94a3b8;margin:10px 0">Tu app ya está funcionando 24/7 en Render</p>
-<p style="margin-top:10px"><a href="/" style="color:#22c55e;font-weight:800">auditya-pro.onrender.com → Probar Ahora</a></p>
-<p style="margin-top:8px;font-size:12px;color:#64748b">Hecho en Ecuador 🇪🇨 · WhatsApp: 0997687995 · @cristhoperpinos</p>
-</div>
-</div>
+<script>
+async function activar(){
+ let c=document.getElementById('codigo').value.trim().toUpperCase();
+ if(!c){alert('Pon tu código');return}
+ document.getElementById('res').innerHTML='⏳ Verificando...';
+ try{
+  let r=await fetch('/activar/validar?codigo='+encodeURIComponent(c));
+  let d=await r.json();
+  if(d.valido){
+    document.getElementById('res').innerHTML='<div class=ok>✅ CÓDIGO VÁLIDO<br><b>'+d.plan+'</b> - '+d.limite+' auditorías<br>Usados: '+d.usados+' | Restan: '+(d.limite-d.usados)+'<br><br>Ya puedes usarlo en la <a href=/>app principal</a><br>Pon tu código en el campo Código PRO</div>';
+  }else{
+    document.getElementById('res').innerHTML='<div class=err>❌ '+d.error+'</div>';
+  }
+ }catch(e){document.getElementById('res').innerHTML='<div class=err>Error: '+e+'</div>'}
+}
+</script>
 </body>
 </html>
 """
 
+ADMIN_HTML = """
+<!DOCTYPE html>
+<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>Admin - AuditYa Pro</title>
+<style>body{font-family:system-ui;background:#0f172a;color:#fff;padding:20px}
+.container{max-width:800px;margin:0 auto}
+.card{background:#1e293b;padding:20px;border-radius:12px;margin:15px 0;border:1px solid rgba(255,255,255,.06)}
+input,select{padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:#0f172a;color:#fff;margin:5px;width:200px}
+.btn{padding:10px 18px;border:none;border-radius:8px;font-weight:800;cursor:pointer}
+.btn-g{background:#22c55e;color:#0f172a}.btn-b{background:#3b82f6;color:#fff}
+table{width:100%;border-collapse:collapse;margin-top:15px;font-size:13px}
+th,td{padding:8px;text-align:left;border-bottom:1px solid rgba(255,255,255,.08)}
+th{color:#94a3b8;font-size:11px}
+.code{font-family:monospace;background:rgba(34,197,94,.15);padding:4px 8px;border-radius:6px;color:#86efac}
+</style>
+</head>
+<body><div class="container">
+<h1>🔐 Admin AuditYa Pro</h1>
+<p style="color:#94a3b8">WhatsApp: 0997687995 · Genera códigos después de cobrar</p>
+
+<div class="card">
+<h3>➕ Generar Nuevo Código</h3>
+<form onsubmit="generar(event)">
+<input id="email" placeholder="Email cliente" required>
+<select id="plan"><option value="Basico">Básico $27 - 10 audits</option><option value="Pro" selected>Pro $47 - 50 audits</option><option value="Agencia">Agencia $97 - 999 audits</option></select>
+<button type="submit" class="btn btn-g">Generar Código</button>
+</form>
+<div id="nuevo"></div>
+</div>
+
+<div class="card">
+<h3>📋 Códigos Generados (<span id="total">0</span>)</h3>
+<div id="lista">Cargando...</div>
+</div>
+
+<script>
+async function load(){
+ let r=await fetch('/admin/lista?pass={{PASS}}');
+ let d=await r.json();
+ document.getElementById('total').innerText=d.total;
+ let html='<table><tr><th>Código</th><th>Plan</th><th>Email</th><th>Usados/Limite</th><th>Estado</th></tr>';
+ d.codigos.forEach(c=>{
+   html+=`<tr><td><span class=code>${c.codigo}</span></td><td>${c.plan}</td><td>${c.email}</td><td>${c.usados}/${c.limite}</td><td>${c.activo?'✅':'❌'}</td></tr>`;
+ });
+ html+='</table>';
+ document.getElementById('lista').innerHTML=html;
+}
+async function generar(e){
+ e.preventDefault();
+ let email=document.getElementById('email').value;
+ let plan=document.getElementById('plan').value;
+ let r=await fetch('/admin/generar?pass={{PASS}}&email='+encodeURIComponent(email)+'&plan='+encodeURIComponent(plan),{method:'POST'});
+ let d=await r.json();
+ if(d.ok){
+   document.getElementById('nuevo').innerHTML='<p style=color:#86efac;margin-top:10px>✅ Código: <span class=code>'+d.codigo.codigo+'</span> para '+plan+'<br>Mensaje para WhatsApp: <br><textarea style=width:100%;margin-top:6px;padding:8px;background:#0f172a;color:#fff;border-radius:8px>¡Gracias por tu compra! 🎉 Tu código AuditYa Pro '+plan+' es: '+d.codigo.codigo+' Actívalo aquí: https://auditya-pro.onrender.com/activar WhatsApp: 0997687995</textarea></p>';
+   load();
+ }else{alert(d.error)}
+}
+load();
+</script>
+</div></body></html>
+"""
+
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    return APP_HTML
+    return HOME_HTML
 
 @app.get("/ventas", response_class=HTMLResponse)
 async def ventas():
     return VENTAS_HTML
 
+@app.get("/activar", response_class=HTMLResponse)
+async def activar_page():
+    return ACTIVAR_HTML
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page(pass_: str = Query(None, alias="pass")):
+    if pass_ != ADMIN_PASS:
+        return HTMLResponse("""
+        <body style="background:#0f172a;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh">
+        <div style="text-align:center"><h2>🔐 Admin Privado</h2><p>Acceso solo para Cristhoper</p>
+        <form method="get"><input type="password" name="pass" placeholder="Contraseña" style="padding:10px;border-radius:8px"><button style="padding:10px 20px;border:none;background:#22c55e;border-radius:8px;font-weight:800;margin-left:6px">Entrar</button></form>
+        <p style="font-size:12px;color:#64748b;margin-top:10px">Contraseña por defecto: Cristhoper2025</p></div></body>
+        """, status_code=401)
+    html = ADMIN_HTML.replace("{{PASS}}", ADMIN_PASS)
+    return HTMLResponse(html)
+
+@app.get("/admin/lista")
+async def admin_lista(pass_: str = Query(None, alias="pass")):
+    if pass_ != ADMIN_PASS:
+        return JSONResponse({"error":"No autorizado"}, status_code=401)
+    codes = load_codes()
+    lista = []
+    for k,v in codes.items():
+        lista.append({"codigo":k, **v})
+    return {"total": len(lista), "codigos": lista[::-1]}
+
+@app.post("/admin/generar")
+async def admin_generar(pass_: str = Query(None, alias="pass"), email: str = Query(...), plan: str = Query(...)):
+    if pass_ != ADMIN_PASS:
+        return JSONResponse({"error":"No autorizado"}, status_code=401)
+    limite = {"Basico":10,"Pro":50,"Agencia":999}.get(plan, 50)
+    codigo = gen_code(plan)
+    codes = load_codes()
+    codes[codigo] = {"plan":plan,"limite":limite,"usados":0,"email":email,"activo":True,"creado":str(datetime.now())}
+    save_codes(codes)
+    global codes_db
+    codes_db = codes
+    return {"ok":True,"codigo":{"codigo":codigo,"plan":plan,"limite":limite,"email":email}}
+
+@app.get("/activar/validar")
+async def activar_validar(codigo: str = Query(...)):
+    codigo = codigo.strip().upper()
+    codes = load_codes()
+    if codigo not in codes:
+        return {"valido":False,"error":"Código no existe. Verifica que lo escribiste bien. Compra en /ventas"}
+    c = codes[codigo]
+    if not c.get("activo"):
+        return {"valido":False,"error":"Código desactivado"}
+    if c["usados"] >= c["limite"]:
+        return {"valido":False,"error":f"Código agotado. Usaste {c['usados']}/{c['limite']} auditorías. Renueva en /ventas"}
+    return {"valido":True, **c, "codigo":codigo}
+
 @app.get("/auditar")
-async def auditar(url: str = Query(...)):
+async def auditar(url: str = Query(...), codigo: str = Query(None)):
+    global codes_db
+    codes = load_codes()
+    licencia_info = None
+    if codigo:
+        codigo = codigo.strip().upper()
+        if codigo not in codes:
+            return JSONResponse({"error": f"Código {codigo} no existe. Actívalo en /activar o compra en /ventas"}, status_code=402)
+        c = codes[codigo]
+        if not c.get("activo"):
+            return JSONResponse({"error":"Código desactivado"}, status_code=402)
+        if c["usados"] >= c["limite"]:
+            return JSONResponse({"error":f"Límite alcanzado {c['usados']}/{c['limite']}. Renueva tu plan en /ventas - WhatsApp 0997687995"}, status_code=402)
+        # consumir 1 auditoría
+        codes[codigo]["usados"] += 1
+        save_codes(codes)
+        codes_db = codes
+        licencia_info = {"codigo":codigo,"plan":c["plan"],"limite":c["limite"],"usados":codes[codigo]["usados"]}
+
     dominio = url.replace("https://","").replace("http://","").split("/")[0].split("?")[0]
     online = False
     status_code = 0
@@ -193,15 +359,18 @@ async def auditar(url: str = Query(...)):
             valido = dias > 0
     except:
         valido = False
-    recomendacion = "TODO BIEN - Sitio seguro y online"
+    recomendacion = "TODO BIEN - Sitio seguro"
     if not online:
-        recomendacion = "CRITICO: Sitio offline"
+        recomendacion = "CRITICO: Offline"
     elif not valido:
-        recomendacion = "CRITICO: SSL invalido o expirado"
+        recomendacion = "CRITICO: SSL invalido"
     elif 0 < dias < 30:
         recomendacion = f"ATENCION: SSL expira en {dias} dias"
-    return {"dominio":dominio,"online":online,"status_code":status_code,"ssl":{"valido":valido,"dias_restantes":dias},"valido":valido,"dias_restantes":dias,"recomendacion":recomendacion}
+    result = {"dominio":dominio,"online":online,"status_code":status_code,"ssl":{"valido":valido,"dias_restantes":dias},"recomendacion":recomendacion}
+    if licencia_info:
+        result["licencia"] = licencia_info
+    return result
 
 @app.get("/health")
 def health():
-    return {"status":"ok"}
+    return {"status":"ok","codes":len(load_codes())}
